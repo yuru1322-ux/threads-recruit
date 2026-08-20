@@ -1,0 +1,80 @@
+name: 下書き承認
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: threads-approve-${{ github.event.issue.number }}
+
+jobs:
+  approve:
+    # リポジトリのオーナー／メンテナのコメントのみ受け付ける
+    if: >
+      github.event.issue.state == 'open' &&
+      startsWith(github.event.issue.title, '[下書き]') &&
+      (github.event.comment.author_association == 'OWNER' ||
+       github.event.comment.author_association == 'MEMBER' ||
+       github.event.comment.author_association == 'COLLABORATOR') &&
+      (contains(github.event.comment.body, '/approve') ||
+       contains(github.event.comment.body, '/reject'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 対象日とアクションを取り出す
+        id: p
+        env:
+          TITLE: ${{ github.event.issue.title }}
+          COMMENT: ${{ github.event.comment.body }}
+        run: |
+          DATE=$(echo "$TITLE" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
+          if [ -z "$DATE" ]; then echo "日付を特定できませんでした" >&2; exit 1; fi
+          if echo "$COMMENT" | grep -q '/reject'; then ACTION=reject; else ACTION=approve; fi
+          echo "date=$DATE" >> "$GITHUB_OUTPUT"
+          echo "action=$ACTION" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: ステータスを更新
+        env:
+          TZ: Asia/Tokyo
+        run: python -m src.cli ${{ steps.p.outputs.action }} --date "${{ steps.p.outputs.date }}"
+
+      - name: コミット
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase --autostash
+          git add drafts
+          if git diff --cached --quiet; then
+            echo "変更なし"
+          else
+            git commit -m "${{ steps.p.outputs.action }}: ${{ steps.p.outputs.date }}"
+            git push
+          fi
+
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const action = '${{ steps.p.outputs.action }}';
+            const date = '${{ steps.p.outputs.date }}';
+            const msg = action === 'approve'
+              ? `✅ 承認しました。${date} 20:00 (JST) に自動投稿されます。`
+              : `🚫 却下しました。${date} は投稿しません。`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number, body: msg,
+            });
+            if (action === 'reject') {
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: context.issue.number, state: 'closed',
+              });
+            }
