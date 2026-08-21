@@ -112,7 +112,7 @@ def cmd_post(args) -> int:
         print(f"{target} は既に投稿済みです（post_id={draft['threads_post_id']}）。")
         return 0
 
-    if args.require_approval and draft["status"] != drafts.STATUS_APPROVED:
+    if args.require_approval and draft["status"] not in (drafts.STATUS_APPROVED, drafts.STATUS_PARTIAL):
         print(f"{target} の下書きは未承認（status={draft['status']}）のため投稿しません。", file=sys.stderr)
         postlog.log_post(
             posted_at=datetime.now(config.TZ).isoformat(),
@@ -143,11 +143,34 @@ def cmd_post(args) -> int:
         )
         return 0
 
-    from .threads_api import ThreadsClient, ThreadsError
+    from .threads_api import PartialPostError, ThreadsClient, ThreadsError
 
     try:
         client = ThreadsClient()
-        post_id, reply_id = client.post_with_reply(draft["body"], draft["reply"])
+        if draft["status"] == drafts.STATUS_PARTIAL and draft.get("threads_post_id"):
+            # 本文は投稿済み。返信だけ再試行する（本文の二重投稿を避ける）。
+            post_id = draft["threads_post_id"]
+            reply_id = client.post_text(draft["reply"], reply_to_id=post_id)
+        else:
+            post_id, reply_id = client.post_with_reply(draft["body"], draft["reply"])
+    except PartialPostError as e:
+        draft["status"] = drafts.STATUS_PARTIAL
+        draft["threads_post_id"] = e.post_id
+        draft["error"] = str(e)
+        drafts.save(draft)
+        postlog.log_post(
+            posted_at=now.isoformat(),
+            weekday_label=draft["weekday"],
+            theme_name=draft["theme_name"],
+            angle_label=draft["angle_label"],
+            body_text=draft["body"],
+            reply_text=draft["reply"],
+            status="partial_body_only",
+            post_id=e.post_id,
+            error=str(e),
+        )
+        print(f"本文は投稿されましたが返信の投稿に失敗しました（post_id={e.post_id}）。次回実行時に返信のみ再試行します。", file=sys.stderr)
+        return 1
     except (ThreadsError, RuntimeError) as e:
         draft["status"] = drafts.STATUS_FAILED
         draft["error"] = str(e)

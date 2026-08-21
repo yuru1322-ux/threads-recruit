@@ -11,6 +11,7 @@ STATUS_APPROVED = "approved"
 STATUS_REJECTED = "rejected"
 STATUS_POSTED = "posted"
 STATUS_FAILED = "failed"
+STATUS_PARTIAL = "posted_partial"  # 本文は投稿済みだが返信が未投稿
 
 
 def path_for(target: date):
