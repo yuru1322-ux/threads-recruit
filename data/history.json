@@ -1,1 +1,13 @@
-{"entries": []}
+{
+  "entries": [
+    {
+      "date": "2026-08-21",
+      "theme_key": "holiday",
+      "theme_name": "休暇・ライフ系",
+      "angle_id": "hourly_leave",
+      "angle_label": "1時間単位の時間休という細かい制度",
+      "summary": "1時間単位の時間休・当日申請可という制度紹介",
+      "hook": "病棟時代は考えられなかったんですが…"
+    }
+  ]
+}
