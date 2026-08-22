@@ -11,10 +11,10 @@
   "reply": "今日は働き方についてのお話を共有します！\n\n男性育休の取得実績があるのに加えて、子育て支援金の制度も整っています。日勤のみで土日or日月休みも選べますし、時短勤務の選択肢もあるんです！育てながら働くことを、ちゃんと想定して作られた職場だなあ〜思っています。\n\n９割近くが訪問看護が未経験スタートです！「どんな方でもウェルカム」というわけではなくて、合う方にだけ詳しくお伝えしたいです…！選考でも勧誘でもないので、気になったらお気軽にDMへどうぞ✨",
   "summary": "男性育休取得実績・子育て支援を切り口にDM誘導",
   "warnings": [],
-  "status": "approved",
+  "status": "failed",
   "generated_at": "2026-08-22T11:07:19.723482+09:00",
   "posted_at": null,
   "threads_post_id": null,
   "threads_reply_id": null,
-  "error": null
+  "error": "HTTP 400: {\"error\":{\"message\":\"API access blocked.\",\"type\":\"OAuthException\",\"code\":200,\"fbtrace_id\":\"AmGP02GXiSWIoWRpaNEGzH6\"}}"
 }
