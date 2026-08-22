@@ -9,7 +9,13 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.threads_api import PartialPostError, ThreadsClient, ThreadsError  # noqa: E402
+from src.threads_api import (  # noqa: E402
+    PartialPostError,
+    ThreadsAPIError,
+    ThreadsClient,
+    ThreadsError,
+    describe_error,
+)
 
 
 class FakeResponse:
@@ -92,11 +98,116 @@ def test_post_with_reply_raises_partial_post_error_and_keeps_post_id():
     print("✓ 本文成功・返信失敗時は post_id 付きの PartialPostError になる")
 
 
+def test_blocked_error_stops_immediately_without_retry():
+    """code 200 (OAuthException "API access blocked") はリトライせず即座に例外になる."""
+    call_count = {"n": 0}
+
+    def fake_post(url, data=None, timeout=None):
+        call_count["n"] += 1
+        return FakeResponse(
+            400,
+            {
+                "error": {
+                    "message": "API access blocked.",
+                    "type": "OAuthException",
+                    "code": 200,
+                    "fbtrace_id": "abc123",
+                }
+            },
+        )
+
+    with patch("src.threads_api.requests.post", side_effect=fake_post), \
+         patch("src.threads_api.time.sleep", return_value=None) as sleep_mock:
+        client = _client()
+        try:
+            client.create_container("テスト投稿")
+            assert False, "ThreadsAPIError が発生するはず"
+        except ThreadsAPIError as e:
+            assert e.is_blocked
+            assert e.code == 200
+            assert e.fbtrace_id == "abc123"
+    assert call_count["n"] == 1, "ブロック時はリトライしないはず"
+    sleep_mock.assert_not_called()
+    print("✓ code 200 (OAuthException) はリトライせず即座に停止する")
+
+
+def test_rate_limit_error_is_retried_then_raised():
+    """レート制限系(HTTP 429)はリトライしたうえで最終的に例外になる."""
+    call_count = {"n": 0}
+
+    def fake_post(url, data=None, timeout=None):
+        call_count["n"] += 1
+        return FakeResponse(429, {"error": {"message": "rate limited", "code": 4}}, text="rate limited")
+
+    with patch("src.threads_api.requests.post", side_effect=fake_post), \
+         patch("src.threads_api.time.sleep", return_value=None):
+        client = _client()
+        try:
+            client.create_container("テスト投稿")
+            assert False, "ThreadsError が発生するはず"
+        except ThreadsError:
+            pass
+    assert call_count["n"] == 3, "429はretries回数だけ試行するはず"
+    print("✓ 429はリトライしたうえで最終的に例外になる")
+
+
+def test_other_client_error_parses_fields_and_does_not_retry():
+    def fake_post(url, data=None, timeout=None):
+        return FakeResponse(
+            400,
+            {
+                "error": {
+                    "message": "Object does not exist",
+                    "type": "OAuthException",
+                    "code": 100,
+                    "error_subcode": 33,
+                    "fbtrace_id": "xyz",
+                }
+            },
+        )
+
+    with patch("src.threads_api.requests.post", side_effect=fake_post) as post_mock, \
+         patch("src.threads_api.time.sleep", return_value=None):
+        client = _client()
+        try:
+            client.create_container("テスト投稿")
+            assert False, "ThreadsAPIError が発生するはず"
+        except ThreadsAPIError as e:
+            assert e.code == 100
+            assert e.error_subcode == 33
+            assert e.fbtrace_id == "xyz"
+            assert not e.is_blocked
+    assert post_mock.call_count == 1, "リトライしても無駄な4xxは即座に停止するはず"
+    print("✓ 4xxエラーの code/error_subcode/fbtrace_id を解析し、リトライしない")
+
+
+def test_describe_error_maps_known_codes_to_japanese_guidance():
+    blocked = ThreadsAPIError("blocked", code=200, error_type="OAuthException")
+    assert "ブロック" in describe_error(blocked)
+
+    id_issue = ThreadsAPIError("id issue", code=100, error_subcode=33)
+    assert "権限" in describe_error(id_issue)
+
+    rate = ThreadsAPIError("rate", code=17)
+    assert "レート制限" in describe_error(rate)
+
+    expired = ThreadsAPIError("expired", code=190, error_subcode=463)
+    assert "トークン" in describe_error(expired)
+
+    unknown = ThreadsAPIError("???", code=999)
+    assert "未分類" in describe_error(unknown)
+    print("✓ describe_error が主要なエラーコードを日本語ガイダンスに変換する")
+
+
 if __name__ == "__main__":
     for fn in [
         test_publish_waits_for_finished_status,
         test_publish_raises_when_container_errors,
         test_post_with_reply_raises_partial_post_error_and_keeps_post_id,
+        test_blocked_error_stops_immediately_without_retry,
+        test_rate_limit_error_is_retried_then_raised,
+        test_other_client_error_parses_fields_and_does_not_retry,
+        test_describe_error_maps_known_codes_to_japanese_guidance,
     ]:
         fn()
     print("\nすべてのテストに合格しました。")

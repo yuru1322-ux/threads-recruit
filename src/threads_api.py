@@ -18,6 +18,86 @@ class ThreadsError(RuntimeError):
     pass
 
 
+class ThreadsAPIError(ThreadsError):
+    """Graph API がエラーレスポンス（JSONの error オブジェクト）を返した場合の例外.
+
+    code / error_subcode / fbtrace_id を保持し、diagnose やエラーメッセージ整形で使う。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        code: int | None = None,
+        error_subcode: int | None = None,
+        error_type: str | None = None,
+        fbtrace_id: str | None = None,
+        raw_message: str | None = None,
+    ):
+        super().__init__(message)
+        self.status_code = status_code
+        self.code = code
+        self.error_subcode = error_subcode
+        self.error_type = error_type
+        self.fbtrace_id = fbtrace_id
+        self.raw_message = raw_message
+
+    @property
+    def is_blocked(self) -> bool:
+        """Meta側のアクセス制限（OAuthException code 200 "API access blocked"）かどうか."""
+        return self.code == 200 and self.error_type == "OAuthException"
+
+
+def _parse_api_error(res: "requests.Response") -> ThreadsAPIError:
+    err: dict = {}
+    try:
+        body = res.json()
+        if isinstance(body, dict):
+            err = body.get("error") or {}
+    except ValueError:
+        pass
+    message = err.get("message") or res.text[:500]
+    return ThreadsAPIError(
+        f"HTTP {res.status_code}: {message}",
+        status_code=res.status_code,
+        code=err.get("code"),
+        error_subcode=err.get("error_subcode"),
+        error_type=err.get("type"),
+        fbtrace_id=err.get("fbtrace_id"),
+        raw_message=message,
+    )
+
+
+def describe_error(e: ThreadsAPIError) -> str:
+    """code / error_subcode から、日本語の原因説明と対処法を返す."""
+    if e.is_blocked:
+        return (
+            "Meta側のAPIアクセス制限（OAuthException code 200 \"API access blocked\"）と判断されます。"
+            "手動リトライを繰り返すとブロックが長引くおそれがあるため、今は再実行せず時間をおいてください。"
+            "`python -m src.cli diagnose` で読み取りが復旧しているか確認できます。"
+        )
+    if e.code == 100 and e.error_subcode == 33:
+        return (
+            "対象ID、または権限の問題です（code 100 / subcode 33）。"
+            "reply_to_id・コンテナIDが正しいか、トークンの投稿権限（threads_content_publish 等）を確認してください。"
+        )
+    if e.code in (4, 17, 32):
+        return (
+            f"レート制限です（code {e.code}）。しばらく時間をおいてから再実行してください。"
+            "短時間の連続実行は避けてください。"
+        )
+    if e.code == 190:
+        return (
+            f"アクセストークンが無効・期限切れの可能性があります（code 190 / subcode {e.error_subcode}）。"
+            "Meta for Developers でトークンを再発行し、GitHub Secrets の THREADS_ACCESS_TOKEN を更新してください。"
+        )
+    return (
+        f"未分類のAPIエラーです（code={e.code}, error_subcode={e.error_subcode}）。"
+        f"fbtrace_id={e.fbtrace_id} を確認してください。"
+    )
+
+
 class PartialPostError(ThreadsError):
     """本文（1投稿目）は公開できたが、返信（2投稿目）が失敗した場合の例外.
 
@@ -46,18 +126,27 @@ class ThreadsClient:
         for attempt in range(retries):
             try:
                 res = requests.post(url, data=params, timeout=self.timeout)
-                if res.status_code >= 500 or res.status_code == 429:
-                    raise ThreadsError(f"HTTP {res.status_code}: {res.text[:300]}")
-                if not res.ok:
-                    # 4xx は再試行しても無駄なので即座に投げる
-                    raise ThreadsError(f"HTTP {res.status_code}: {res.text[:500]}")
-                return res.json()
-            except (requests.RequestException, ThreadsError) as e:
+            except requests.RequestException as e:
                 last_err = e
-                if isinstance(e, ThreadsError) and "HTTP 4" in str(e) and "HTTP 429" not in str(e):
-                    raise
                 if attempt < retries - 1:
                     time.sleep(2 ** attempt * 3)
+                continue
+
+            if res.ok:
+                return res.json()
+
+            api_err = _parse_api_error(res)
+            if api_err.is_blocked:
+                # Meta側のアクセス制限。リクエストを重ねるとブロックが長引くため、
+                # リトライせず即座に投げる。
+                raise api_err
+            if res.status_code >= 500 or res.status_code == 429:
+                last_err = api_err
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt * 3)
+                continue
+            # その他の 4xx は再試行しても無駄なので即座に投げる
+            raise api_err
         raise ThreadsError(f"リクエストに失敗しました: {last_err}")
 
     # ---- 高レベル ----
@@ -80,7 +169,7 @@ class ThreadsClient:
             timeout=self.timeout,
         )
         if not res.ok:
-            raise ThreadsError(f"HTTP {res.status_code}: {res.text[:500]}")
+            raise _parse_api_error(res)
         return res.json()
 
     def wait_until_ready(self, container_id: str, *, timeout: int = 120, poll_interval: int = 5) -> None:
@@ -135,5 +224,5 @@ class ThreadsClient:
             timeout=self.timeout,
         )
         if not res.ok:
-            raise ThreadsError(f"HTTP {res.status_code}: {res.text[:500]}")
+            raise _parse_api_error(res)
         return res.json()

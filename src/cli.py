@@ -4,7 +4,8 @@
   python -m src.cli show     [--date YYYY-MM-DD]
   python -m src.cli approve  [--date YYYY-MM-DD]
   python -m src.cli reject   [--date YYYY-MM-DD]
-  python -m src.cli post     [--date YYYY-MM-DD] [--require-approval] [--dry-run]
+  python -m src.cli post     [--date YYYY-MM-DD] [--require-approval] [--dry-run] [--force]
+  python -m src.cli diagnose
   python -m src.cli check
   python -m src.cli log      [--limit N]
 """
@@ -14,7 +15,7 @@ import argparse
 import sys
 from datetime import date, datetime, timedelta
 
-from . import config, drafts, generator, history, postlog
+from . import config, drafts, generator, guard, history, postlog
 from .generator import WEEKDAY_JA
 from .themes import get_theme
 
@@ -143,7 +144,26 @@ def cmd_post(args) -> int:
         )
         return 0
 
-    from .threads_api import PartialPostError, ThreadsClient, ThreadsError
+    from .threads_api import PartialPostError, ThreadsAPIError, ThreadsClient, ThreadsError, describe_error
+
+    try:
+        guard.check(now, force=args.force)
+    except guard.CooldownError as e:
+        print(f"⏸ {e}", file=sys.stderr)
+        postlog.log_post(
+            posted_at=now.isoformat(),
+            weekday_label=draft["weekday"],
+            theme_name=draft["theme_name"],
+            angle_label=draft["angle_label"],
+            body_text=draft["body"],
+            reply_text=draft["reply"],
+            status="skipped_cooldown",
+            error=str(e),
+        )
+        return 3
+
+    # 実際にAPIを呼ぶ直前に試行時刻を記録する（成功・失敗にかかわらず連続実行を防ぐため）。
+    guard.record(now)
 
     try:
         client = ThreadsClient()
@@ -156,7 +176,10 @@ def cmd_post(args) -> int:
     except PartialPostError as e:
         draft["status"] = drafts.STATUS_PARTIAL
         draft["threads_post_id"] = e.post_id
-        draft["error"] = str(e)
+        error_detail = str(e)
+        if isinstance(e.cause, ThreadsAPIError):
+            error_detail = f"{error_detail}\n{describe_error(e.cause)}"
+        draft["error"] = error_detail
         drafts.save(draft)
         postlog.log_post(
             posted_at=now.isoformat(),
@@ -167,13 +190,17 @@ def cmd_post(args) -> int:
             reply_text=draft["reply"],
             status="partial_body_only",
             post_id=e.post_id,
-            error=str(e),
+            error=error_detail,
         )
         print(f"本文は投稿されましたが返信の投稿に失敗しました（post_id={e.post_id}）。次回実行時に返信のみ再試行します。", file=sys.stderr)
+        print(error_detail, file=sys.stderr)
         return 1
     except (ThreadsError, RuntimeError) as e:
         draft["status"] = drafts.STATUS_FAILED
-        draft["error"] = str(e)
+        error_detail = str(e)
+        if isinstance(e, ThreadsAPIError):
+            error_detail = f"{error_detail}\n{describe_error(e)}"
+        draft["error"] = error_detail
         drafts.save(draft)
         postlog.log_post(
             posted_at=now.isoformat(),
@@ -183,9 +210,9 @@ def cmd_post(args) -> int:
             body_text=draft["body"],
             reply_text=draft["reply"],
             status="failed",
-            error=str(e),
+            error=error_detail,
         )
-        print(f"投稿に失敗しました: {e}", file=sys.stderr)
+        print(f"投稿に失敗しました: {error_detail}", file=sys.stderr)
         return 1
 
     draft["status"] = drafts.STATUS_POSTED
@@ -216,6 +243,47 @@ def cmd_post(args) -> int:
         reply_id=reply_id,
     )
     print(f"投稿しました。post_id={post_id} / reply_id={reply_id}")
+    return 0
+
+
+# --------------------------------------------------------------- diagnose
+def cmd_diagnose(args) -> int:
+    """投稿は一切行わず、読み取り専用でThreads APIの疎通状態を診断する."""
+    from .threads_api import ThreadsAPIError, ThreadsClient, ThreadsError, describe_error
+
+    print("== Threads API 診断（読み取り専用・投稿は行いません） ==\n")
+
+    try:
+        client = ThreadsClient()
+    except RuntimeError as e:
+        print(f"❌ 設定エラー: {e}")
+        return 1
+
+    print("[1/2] GET /me（fields=id,username）で読み取りを確認...")
+    try:
+        info = client.check_token()
+    except ThreadsAPIError as e:
+        print(f"  ❌ 読み取りに失敗しました: HTTP {e.status_code}")
+        print(f"     code={e.code} error_subcode={e.error_subcode} type={e.error_type} fbtrace_id={e.fbtrace_id}")
+        print(f"     message: {e.raw_message}")
+        print(f"  → {describe_error(e)}")
+        print("\n== 診断結果 ==")
+        print("読み取りも失敗しています。全面ブロック、またはトークン/権限の問題の可能性が高いです。")
+        return 1
+    except ThreadsError as e:
+        print(f"  ❌ {e}")
+        return 1
+
+    print(f"  ✓ 読み取りOK: @{info.get('username', '?')} (id={info.get('id')})")
+
+    print("\n[2/2] トークンの有効期限を確認...")
+    print("  ⚠ Threads Graph API の /me からは有効期限を直接取得できません。")
+    print("    必要な場合は Meta for Developers のアクセストークンデバッガーで確認してください。")
+
+    print("\n== 診断結果 ==")
+    print("読み取りは正常です。投稿だけが失敗する場合は、投稿APIに対するMeta側の")
+    print("一時的な制限（レート制限・アクセスブロック）が原因の可能性が高いです。")
+    print("時間をおいてから再試行し、短時間での手動連続実行は避けてください。")
     return 0
 
 
@@ -291,7 +359,10 @@ def main(argv: list[str] | None = None) -> int:
     p = add_date(sub.add_parser("post", help="下書きをThreadsへ投稿する"))
     p.add_argument("--require-approval", action="store_true", help="承認済みの下書きのみ投稿する")
     p.add_argument("--dry-run", action="store_true", help="実際には投稿しない")
+    p.add_argument("--force", action="store_true", help="直前の投稿試行から間もなくても、クールダウンを無視して投稿する")
     p.set_defaults(func=cmd_post)
+
+    sub.add_parser("diagnose", help="投稿を行わず、読み取り専用でAPIの状態を診断する").set_defaults(func=cmd_diagnose)
 
     sub.add_parser("check", help="設定と今週の状況を確認する").set_defaults(func=cmd_check)
 

@@ -17,6 +17,7 @@ DATA_DIR = ROOT / "data"
 LOG_DIR = DATA_DIR / "logs"
 DRAFT_DIR = ROOT / "drafts"
 HISTORY_FILE = DATA_DIR / "history.json"
+LAST_POST_ATTEMPT_FILE = DATA_DIR / "last_post_attempt.json"
 
 for _d in (DATA_DIR, LOG_DIR, DRAFT_DIR):
     _d.mkdir(parents=True, exist_ok=True)
@@ -29,6 +30,9 @@ ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Asia/Tokyo"))
 ANGLE_COOLDOWN_DAYS = int(os.getenv("ANGLE_COOLDOWN_DAYS", "28"))
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() in ("1", "true", "yes")
+
+# 短時間の連続投稿でMeta側の制限を招かないためのクールダウン（分）
+POST_COOLDOWN_MINUTES = int(os.getenv("POST_COOLDOWN_MINUTES", "10"))
 
 GRAPH_BASE = "https://graph.threads.net/v1.0"
 
