@@ -1,10 +1,9 @@
 name: Threads投稿
 
+# Threads APIブロックが繰り返し発生したため、自動投稿(schedule)は停止中。
+# 投稿は手動（アプリにコピペ→ /posted コメント）で運用する。
+# ブロックが解消したら schedule トリガーを復活させれば自動投稿に戻せる。
 on:
-  schedule:
-    # 毎日 20:00 JST（11:00 UTC）月〜土。日曜は投稿しない
-    # ※GitHub Actions の schedule は混雑時に数分〜十数分遅れることがあります
-    - cron: "0 11 * * 1-6"
   workflow_dispatch:
     inputs:
       date:
@@ -94,25 +93,30 @@ jobs:
               owner: context.repo.owner, repo: context.repo.repo,
               state: 'open', labels: 'threads-draft',
             });
-            const issue = issues.find(i => i.title.includes(date));
+            // Issueは「その日単体」または「月曜日を起点にした週」を表すタイトルを持つ。
+            // 週次タイトル（[下書き] YYYY-MM-DD週）の場合は、対象日がその週(月〜土)に
+            // 含まれるかで判定する。
+            const target = new Date(`${date}T00:00:00+09:00`);
+            const issue = issues.find(i => {
+              if (i.title.includes(date)) return true;
+              const m = i.title.match(/(\d{4}-\d{2}-\d{2})週/);
+              if (!m) return false;
+              const monday = new Date(`${m[1]}T00:00:00+09:00`);
+              const diffDays = Math.round((target - monday) / 86400000);
+              return diffDays >= 0 && diffDays <= 5;
+            });
             let msg;
             if (d.status === 'posted') {
-              msg = `✅ 投稿完了しました（post_id: ${d.threads_post_id} / reply_id: ${d.threads_reply_id}）`;
+              msg = `✅ ${date} 投稿完了しました（post_id: ${d.threads_post_id} / reply_id: ${d.threads_reply_id}）`;
             } else if (d.status === 'failed') {
-              msg = `❌ 投稿に失敗しました: ${d.error}`;
+              msg = `❌ ${date} 投稿に失敗しました: ${d.error}`;
             } else {
-              msg = `⏭ 未承認のため投稿を見送りました（status: ${d.status}）`;
+              msg = `⏭ ${date} は未承認のため投稿を見送りました（status: ${d.status}）`;
             }
             if (issue) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner, repo: context.repo.repo,
                 issue_number: issue.number, body: msg,
               });
-              if (d.status === 'posted') {
-                await github.rest.issues.update({
-                  owner: context.repo.owner, repo: context.repo.repo,
-                  issue_number: issue.number, state: 'closed',
-                });
-              }
             }
             if (d.status === 'failed') core.setFailed(msg);

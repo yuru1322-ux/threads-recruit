@@ -1,13 +1,15 @@
 """コマンドラインインターフェース.
 
-  python -m src.cli generate [--date YYYY-MM-DD] [--angle ANGLE_ID] [--force]
-  python -m src.cli show     [--date YYYY-MM-DD]
-  python -m src.cli approve  [--date YYYY-MM-DD]
-  python -m src.cli reject   [--date YYYY-MM-DD]
-  python -m src.cli post     [--date YYYY-MM-DD] [--require-approval] [--dry-run] [--force]
+  python -m src.cli generate      [--date YYYY-MM-DD] [--angle ANGLE_ID] [--force]
+  python -m src.cli generate-week [--monday YYYY-MM-DD] [--force]
+  python -m src.cli show          [--date YYYY-MM-DD]
+  python -m src.cli approve       [--date YYYY-MM-DD]
+  python -m src.cli reject        [--date YYYY-MM-DD]
+  python -m src.cli posted        [--date YYYY-MM-DD]
+  python -m src.cli post          [--date YYYY-MM-DD] [--require-approval] [--dry-run] [--force]
   python -m src.cli diagnose
   python -m src.cli check
-  python -m src.cli log      [--limit N]
+  python -m src.cli log           [--limit N]
 """
 from __future__ import annotations
 
@@ -15,7 +17,7 @@ import argparse
 import sys
 from datetime import date, datetime, timedelta
 
-from . import config, drafts, generator, guard, history, postlog
+from . import config, drafts, generator, guard, history, postlog, style_notes, weekly
 from .generator import WEEKDAY_JA
 from .themes import get_theme
 
@@ -55,6 +57,20 @@ def cmd_generate(args) -> int:
     return 0
 
 
+# ------------------------------------------------------------- generate-week
+def cmd_generate_week(args) -> int:
+    monday = weekly.monday_of(_parse_date(args.monday))
+    results = weekly.generate_week(monday, force=args.force)
+    if not results:
+        print(f"{monday}週は生成対象がありませんでした。")
+        return 0
+    for draft in results:
+        print(drafts.render(draft))
+        print()
+    print(f"{monday}週の下書きを{len(results)}件、drafts/ に保存しました。")
+    return 0
+
+
 # ------------------------------------------------------------------- show
 def cmd_show(args) -> int:
     target = _parse_date(args.date)
@@ -84,6 +100,55 @@ def cmd_approve(args) -> int:
 
 def cmd_reject(args) -> int:
     return _set(args, drafts.STATUS_REJECTED)
+
+
+# ----------------------------------------------------------------- posted
+def cmd_posted(args) -> int:
+    """手動投稿（アプリからコピペ）が完了したことを記録する.
+
+    下書きのstatusをpostedにし、history.jsonに切り口を記録して重複管理を継続させる。
+    生成直後の本文（generated_body/generated_reply）と現在の本文（body/reply）が
+    異なる場合は、その差分を style-notes.md に自動で蓄積する。
+    """
+    target = _parse_date(args.date)
+    draft = drafts.load(target)
+    if draft is None:
+        print(f"{target} の下書きがありません。", file=sys.stderr)
+        return 1
+
+    if draft["status"] == drafts.STATUS_POSTED:
+        print(f"{target} は既に posted 記録済みです。")
+        print(drafts.render(draft))
+        return 0
+
+    before_body = draft.get("generated_body", draft["body"])
+    before_reply = draft.get("generated_reply", draft["reply"])
+    if style_notes.record_edit(
+        post_date=target,
+        before_body=before_body,
+        after_body=draft["body"],
+        before_reply=before_reply,
+        after_reply=draft["reply"],
+    ):
+        print(f"生成直後との差分を style-notes.md に記録しました。")
+
+    draft["status"] = drafts.STATUS_POSTED
+    draft["posted_at"] = datetime.now(config.TZ).isoformat()
+    draft["error"] = None
+    drafts.save(draft)
+
+    history.record(
+        post_date=target,
+        theme_key=draft["theme_key"],
+        theme_name=draft["theme_name"],
+        angle_id=draft["angle_id"],
+        angle_label=draft["angle_label"],
+        summary=draft.get("summary", ""),
+        hook=draft.get("hook", ""),
+    )
+    print(f"{target} の下書きを posted にしました。")
+    print(drafts.render(draft))
+    return 0
 
 
 # ------------------------------------------------------------------- post
@@ -352,9 +417,15 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--force", action="store_true", help="既存の下書きを上書きする")
     g.set_defaults(func=cmd_generate)
 
+    gw = sub.add_parser("generate-week", help="月〜土6日分の下書きをまとめて生成する")
+    gw.add_argument("--monday", help="対象週の月曜日 (YYYY-MM-DD)。省略時は今日を含む週の月曜")
+    gw.add_argument("--force", action="store_true", help="既存の下書きを上書きする")
+    gw.set_defaults(func=cmd_generate_week)
+
     add_date(sub.add_parser("show", help="下書きを表示する")).set_defaults(func=cmd_show)
     add_date(sub.add_parser("approve", help="下書きを承認する")).set_defaults(func=cmd_approve)
     add_date(sub.add_parser("reject", help="下書きを却下する")).set_defaults(func=cmd_reject)
+    add_date(sub.add_parser("posted", help="手動投稿の完了を記録する（status=posted、history記録、差分をstyle-notes.mdへ）")).set_defaults(func=cmd_posted)
 
     p = add_date(sub.add_parser("post", help="下書きをThreadsへ投稿する"))
     p.add_argument("--require-approval", action="store_true", help="承認済みの下書きのみ投稿する")

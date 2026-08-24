@@ -18,6 +18,8 @@ LOG_DIR = DATA_DIR / "logs"
 DRAFT_DIR = ROOT / "drafts"
 HISTORY_FILE = DATA_DIR / "history.json"
 LAST_POST_ATTEMPT_FILE = DATA_DIR / "last_post_attempt.json"
+STYLE_NOTES_FILE = ROOT / "style-notes.md"
+STYLE_EDITS_FILE = DATA_DIR / "style_edits.jsonl"
 
 for _d in (DATA_DIR, LOG_DIR, DRAFT_DIR):
     _d.mkdir(parents=True, exist_ok=True)

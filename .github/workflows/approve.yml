@@ -1,4 +1,4 @@
-name: 下書き承認
+name: 下書きコメント処理（承認/却下/投稿完了）
 
 on:
   issue_comment:
@@ -21,26 +21,48 @@ jobs:
        github.event.comment.author_association == 'MEMBER' ||
        github.event.comment.author_association == 'COLLABORATOR') &&
       (contains(github.event.comment.body, '/approve') ||
-       contains(github.event.comment.body, '/reject'))
+       contains(github.event.comment.body, '/reject') ||
+       contains(github.event.comment.body, '/posted'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - name: 対象日とアクションを取り出す
         id: p
         env:
           TITLE: ${{ github.event.issue.title }}
           COMMENT: ${{ github.event.comment.body }}
+          TZ: Asia/Tokyo
         run: |
-          DATE=$(echo "$TITLE" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
-          if [ -z "$DATE" ]; then echo "日付を特定できませんでした" >&2; exit 1; fi
-          if echo "$COMMENT" | grep -q '/reject'; then ACTION=reject; else ACTION=approve; fi
+          if echo "$COMMENT" | grep -q '/posted'; then
+            ACTION=posted
+          elif echo "$COMMENT" | grep -q '/reject'; then
+            ACTION=reject
+          else
+            ACTION=approve
+          fi
+
+          # コメント本文中の /コマンド の直後にある日付を優先する（週次Issue対応）。
+          # 例: 「/posted 2026-08-24」「/posted」
+          DATE=$(echo "$COMMENT" | grep -oE "/(approve|reject|posted)[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
+          if [ -z "$DATE" ]; then
+            # 次に、Issueタイトル中の単一の日付（旧形式の日次Issue）を試す
+            DATE=$(echo "$TITLE" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
+          fi
+          if [ -z "$DATE" ] && [ "$ACTION" = "posted" ]; then
+            # /posted は日付省略時、当日扱い
+            DATE=$(TZ=Asia/Tokyo date +%F)
+          fi
+          if [ -z "$DATE" ]; then
+            echo "対象日を特定できませんでした（コメントに /approve 2026-08-24 のように日付を添えてください）" >&2
+            exit 1
+          fi
           echo "date=$DATE" >> "$GITHUB_OUTPUT"
           echo "action=$ACTION" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
 
       - name: ステータスを更新
         env:
@@ -52,7 +74,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git pull --rebase --autostash
-          git add drafts
+          git add drafts data style-notes.md
           if git diff --cached --quiet; then
             echo "変更なし"
           else
@@ -65,16 +87,15 @@ jobs:
           script: |
             const action = '${{ steps.p.outputs.action }}';
             const date = '${{ steps.p.outputs.date }}';
-            const msg = action === 'approve'
-              ? `✅ 承認しました。${date} 20:00 (JST) に自動投稿されます。`
-              : `🚫 却下しました。${date} は投稿しません。`;
+            let msg;
+            if (action === 'approve') {
+              msg = `✅ ${date} を承認しました（承認は任意です。手動投稿の記録には '/posted ${date}' を使ってください）。`;
+            } else if (action === 'posted') {
+              msg = `📮 ${date} の投稿完了を記録しました。`;
+            } else {
+              msg = `🚫 ${date} を却下しました。投稿予定から外します。`;
+            }
             await github.rest.issues.createComment({
               owner: context.repo.owner, repo: context.repo.repo,
               issue_number: context.issue.number, body: msg,
             });
-            if (action === 'reject') {
-              await github.rest.issues.update({
-                owner: context.repo.owner, repo: context.repo.repo,
-                issue_number: context.issue.number, state: 'closed',
-              });
-            }

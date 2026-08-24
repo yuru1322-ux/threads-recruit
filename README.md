@@ -1,37 +1,42 @@
-# Threads 自動投稿システム
+# Threads 自動投稿システム（現在は生成のみ自動・投稿は手動）
 
-訪問看護ステーション向け Threads アカウントの投稿を、曜日別テーマに沿って自動生成し、
-**確認・承認したうえで** 毎日20時（JST）に自動投稿するシステムです。
+訪問看護ステーション向け Threads アカウントの投稿を、曜日別テーマに沿って
+**週1回まとめて自動生成**し、GitHub Issue からコピペして毎日手動で投稿する
+システムです。
+
+> ⚠️ **投稿は現在手動運用です。** Threads APIのアクセスブロック
+> （OAuthException code 200 "API access blocked"）が繰り返し発生したため、
+> 自動投稿（`post.yml` の schedule）を停止しています。ブロックが解消すれば
+> `post.yml` に schedule を戻すだけで自動投稿を再開できます（コードはそのまま
+> 使えます。下記「自動投稿を再開する」参照）。
 
 - 実行基盤: GitHub Actions（サーバー不要）
 - 生成: Anthropic API（Claude）
-- 投稿: Threads API（Meta 公式）
-- 運用: 事前生成 → GitHub Issue で確認 → `/approve` → 20:00 に自動投稿
+- 投稿: 手動（Threadsアプリにコピペ）
+- 運用: 週次まとめ生成 → GitHub Issue からコピペで毎日投稿 → `/posted` で記録
 
 ---
 
-## 1日の流れ
+## 1週間の流れ
 
 ```
-10:00 JST  下書き生成ワークフローが動く
-           └ Claude が本文＋返信欄を生成 → drafts/YYYY-MM-DD.json に保存
-           └ 確認用の Issue が自動で立つ（本文がそのまま読める）
+月曜 8:00 JST  週次の下書き生成ワークフローが動く
+               └ その週の月〜土6日分をまとめて生成 → drafts/YYYY-MM-DD.json に保存
+               └ 6日分が並んだ確認用 Issue が1本立つ（各日の本文・返信欄が
+                 個別にコピーできるコードブロックになっている）
 
-日中       Issue を見て確認
-           ├ OK      → Issue に「/approve」とコメント
-           ├ 修正    → drafts/YYYY-MM-DD.json を編集してから「/approve」
-           └ やめる  → 「/reject」とコメント
+毎日 20:00     Issueから該当日の本文をコピー→Threadsアプリに貼り付けて投稿
+               → 数秒後、返信欄をコピー→貼り付けて投稿
+               → 投稿し終えたらIssueに「/posted 2026-08-24」とコメント
+                 （日付省略時は当日扱い）
 
-20:00 JST  投稿ワークフローが動く
-           ├ 承認済み  → 本文を投稿 →（数秒後）返信欄に続きを投稿
-           │             履歴・ログを記録し、Issue に結果を返してクローズ
-           └ 未承認    → 投稿せずスキップ（ログには残る）
+修正したい場合  drafts/YYYY-MM-DD.json を直接編集してからコピペする
+               → 生成直後の本文と実際に投稿した本文が違えば、/posted 時に
+                 その差分が style-notes.md に自動で追記される
+               → 次回以降の生成プロンプトに、その傾向が反映されていく
 
-日曜       生成も投稿もしない
+日曜            生成も投稿もしない
 ```
-
-**承認しないと投稿されません。** 承認を挟まず完全自動で回したい場合は
-`post.yml` の `--require-approval` を外してください（下記「完全自動にする」参照）。
 
 ---
 
@@ -52,49 +57,29 @@ git push -u origin main
 
 > ⚠️ 必ず **Private** にしてください。投稿履歴・ログが含まれます。
 
-### 2. Threads API のトークンを取る
-
-1. [Meta for Developers](https://developers.facebook.com/) でアプリを作成
-2. 「Threads API」プロダクトを追加
-3. 権限（スコープ）に **`threads_basic`** と **`threads_content_publish`** を追加
-4. 自分の Threads アカウントを連携し、アクセストークンを発行
-5. **長期トークン（60日）に交換**しておく
-
-```bash
-curl -s "https://graph.threads.net/access_token?grant_type=th_exchange_token&client_secret=<APP_SECRET>&access_token=<短期トークン>"
-```
-
-`THREADS_USER_ID` は次で確認できます。
-
-```bash
-curl -s "https://graph.threads.net/v1.0/me?fields=id,username&access_token=<トークン>"
-```
-
-> 📌 長期トークンも **60日で失効** します。切れる前に更新してください（下記「トークンの更新」）。
-
-### 3. GitHub Secrets を登録
+### 2. GitHub Secrets を登録
 
 リポジトリの `Settings → Secrets and variables → Actions → New repository secret`
 
 | 名前 | 内容 |
 |---|---|
-| `THREADS_ACCESS_TOKEN` | 上で取得した長期アクセストークン |
-| `THREADS_USER_ID` | Threads のユーザーID（数値） |
 | `ANTHROPIC_API_KEY` | Anthropic API キー |
 
 モデルを変えたい場合は `Variables` タブに `ANTHROPIC_MODEL` を追加（既定 `claude-sonnet-4-6`）。
 
-### 4. Actions の書き込み権限を有効にする
+> `THREADS_ACCESS_TOKEN` / `THREADS_USER_ID` は今の運用（生成のみ自動・投稿は手動）
+> では使いません。自動投稿を再開するときに登録してください（下記参照）。
+
+### 3. Actions の書き込み権限を有効にする
 
 `Settings → Actions → General → Workflow permissions` で
 **「Read and write permissions」** を選択して保存してください。
-（下書きや投稿ログをリポジトリに自動コミットするために必要です）
+（下書きやスタイルメモをリポジトリに自動コミットするために必要です）
 
-### 5. 動作確認
+### 4. 動作確認
 
-`Actions → 下書き生成 → Run workflow` を手動実行 → Issue が立てば成功です。
-その Issue に `/approve` とコメントし、`Actions → Threads投稿 → Run workflow` で
-`dry_run: true` にして実行すれば、投稿せずに内容だけ確認できます。
+`Actions → 下書き生成（週次） → Run workflow` を手動実行 → 6日分が並んだ
+Issue が立てば成功です。
 
 ---
 
@@ -103,22 +88,21 @@ curl -s "https://graph.threads.net/v1.0/me?fields=id,username&access_token=<ト�
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # 各キーを記入
+cp .env.example .env   # ANTHROPIC_API_KEY を記入
 
-python -m src.cli check                    # 設定確認＋今週の状況
-python -m src.cli generate                 # 今日の下書きを生成
-python -m src.cli generate --date 2026-08-24 --angle before_after
-python -m src.cli show                     # 下書きを表示
-python -m src.cli approve                  # 承認
-python -m src.cli post --dry-run           # 投稿せず内容確認
-python -m src.cli post --require-approval  # 本番投稿
-python -m src.cli log --limit 30           # 投稿ログ
+python -m src.cli check                            # 設定確認＋今週の状況
+python -m src.cli generate-week                     # 今週(月〜土)の下書きをまとめて生成
+python -m src.cli generate-week --monday 2026-08-24  # 対象週を指定
+python -m src.cli generate --date 2026-08-24 --angle bonus --force  # 1日だけ作り直す
+python -m src.cli show --date 2026-08-24            # 下書きを表示
+python -m src.cli posted --date 2026-08-24          # 手動投稿の完了を記録
+python -m src.cli log --limit 30                    # 投稿ログ（自動投稿再開後に使う）
 ```
 
 テスト（API キー不要）:
 
 ```bash
-python tests/test_basic.py
+python -m pytest tests -q
 ```
 
 ---
@@ -147,7 +131,7 @@ python tests/test_basic.py
 - **水曜**: オンコール回数に「一般スタッフは」の断りがあるか
 - 全曜日: 文字数（500字）、ハッシュタグの混入
 
-警告が出た下書きはそのままでは投稿せず、修正してから `/approve` してください。
+警告が出た下書きは、コピペ前に `drafts/YYYY-MM-DD.json` を修正してください。
 
 ---
 
@@ -156,53 +140,89 @@ python tests/test_basic.py
 `data/history.json` に「日付・テーマ・切り口・要約・つかみフレーズ」を記録します。
 
 - 同じ切り口（例:「業界相場との比較」）は **28日間** 再利用しません
+- **同じ週の6本の中でも**、切り口（angle_id）が重複しないように生成します
 - 直近の投稿要約と使用済みつかみフレーズは、次回の生成プロンプトに渡され
   「これと被らないように」と指示されます
 - 期間は `.env` または Secrets の `ANGLE_COOLDOWN_DAYS` で変更できます
+- 重複管理の記録は `/posted` コメント時に行われます（投稿が実際に完了したときのみ）
 
 切り口は `src/themes.py` の `angles` に自由に足せます。増やすほど重複しにくくなります。
 
 ---
 
-## 投稿ログ
+## 文体メモ（style-notes.md）
 
-`data/logs/YYYY-MM.jsonl` に1行1件で記録されます。
+`style-notes.md` には、これまでの手動修正から分かった文体の傾向をまとめています。
+生成時にこのファイルの内容がプロンプトへ渡されるため、編集すれば次回の生成から反映されます。
 
-```json
-{"logged_at":"...","posted_at":"2026-08-21T20:00:11+09:00","weekday":"金",
- "theme":"休暇・ライフ系","angle":"1時間単位の時間休という細かい制度",
- "body_text":"...","reply_text":"...","status":"success",
- "threads_post_id":"1789...","threads_reply_id":"1789...","error":null}
-```
+ファイルは2つのパートに分かれています。
 
-`status` の値: `success` / `failed` / `dry_run` / `skipped_not_approved` / `skipped_no_draft`
+- **手書きの分析**（マーカーより上）: サンプルの少なさを踏まえ、「確認できた傾向」と
+  「サンプル不足で判断できない点」を分けて書いています。断定できない内容を無理に
+  一般化しないよう、必要なら手で追記・修正してください。
+- **自動記録セクション**（`<!-- AUTO-EDITS:START -->` 〜 `<!-- AUTO-EDITS:END -->`）:
+  `/posted` コメント時、生成直後の本文（`generated_body`/`generated_reply`）と
+  実際に投稿した本文（`body`/`reply`）が違えば、その差分が自動で追記されます
+  （直近15件まで。生の差分ログは `data/style_edits.jsonl` に全件残ります）。
+  このセクションは自動生成なので、手で編集しても次の `/posted` で上書きされます。
+
+---
+
+## Issueコマンド
+
+投稿確認用Issueで使えるコマンドです（コメントで実行）。
+
+| コマンド | 効果 |
+|---|---|
+| `/posted [YYYY-MM-DD]` | その日の下書きを posted にし、history.json に記録する（重複管理に使われる）。日付省略時は当日 |
+| `/reject [YYYY-MM-DD]` | その日は投稿しない扱いにする |
+| `/approve [YYYY-MM-DD]` | 任意。承認の記録だけを残す（現在の運用では投稿の可否には影響しません） |
+
+日付は省略するとコメント中の `/posted` などの直後、または当日として扱われます。
+
+> **`/approve` について**: 以前は「承認しないと自動投稿されない」ゲートでしたが、
+> 投稿自体が手動になったため、今は特に何もブロックしません。セルフチェックの
+> 記録として使いたい場合のみ使ってください。使わなくても運用上の支障はありません。
 
 ---
 
 ## よくある運用
 
-### 完全自動にする（承認なし）
+### 特定の日だけ作り直す
 
-`.github/workflows/post.yml` の投稿ステップから `--require-approval` を消します。
-下書きは10:00に生成され、20:00にそのまま投稿されます。
-（生成を当日にせず前夜に回したい場合は `generate.yml` の cron を変えてください）
+```bash
+python -m src.cli generate --date 2026-08-24 --angle bonus --force
+```
+
+その週の該当ファイル（`drafts/2026-08-24.json`）だけ上書きされます。Issueの本文は
+再生成しても自動更新されないので、コピペ時は最新のJSONファイルを見てください。
 
 ### 特定の日だけ休む
 
-その日の Issue に `/reject` とコメントすれば投稿されません。
+その日付で Issue に `/reject 2026-08-24` とコメントしてください（投稿予定から外れます。
+実際にコピペしない、が唯一の強制力です）。
 
-### 投稿時刻を変える
+### 自動投稿を再開する
 
-`post.yml` の cron（UTC）を編集します。`JST = UTC + 9時間`。
-例: 21:00 JST にしたい → `cron: "0 12 * * 1-6"`
+Threads APIのブロックが解消したら:
 
-> ℹ️ GitHub Actions の schedule は、混雑時に **数分〜十数分遅れる**ことがあります。
-> 秒単位の正確さが必要な場合は VPS の cron に移すことをおすすめします（コードはそのまま使えます）。
+1. `THREADS_ACCESS_TOKEN` / `THREADS_USER_ID` を Secrets に登録
+2. `.github/workflows/post.yml` に schedule トリガーを戻す
+   ```yaml
+   on:
+     schedule:
+       - cron: "0 11 * * 1-6"   # 20:00 JST 月〜土
+     workflow_dispatch:
+       ...
+   ```
+3. 必要なら `generate.yml` の週次生成頻度も元の毎日生成に戻す
 
-### トークンの更新
+投稿クールダウン（`src/guard.py`）・返信のみ再試行（`posted_partial`）の仕組みは
+手動運用中も削除せずそのまま残しているので、再開時に手直しは不要です。
 
-Threads の長期トークンは60日で失効します。失効すると投稿が失敗し、
-Issue に `❌ 投稿に失敗しました` とコメントが付き、ワークフローも赤くなります。
+### トークンの更新（自動投稿再開時）
+
+Threads の長期トークンは60日で失効します。
 
 ```bash
 curl -s "https://graph.threads.net/refresh_access_token?grant_type=th_refresh_token&access_token=<現在のトークン>"
@@ -212,26 +232,39 @@ curl -s "https://graph.threads.net/refresh_access_token?grant_type=th_refresh_to
 
 ---
 
+## 投稿ログ
+
+`data/logs/YYYY-MM.jsonl` は自動投稿（`post` コマンド）が実行されたときのみ
+記録されます。現在の手動運用では基本的に増えません（重複管理は
+`data/history.json` と `/posted` コマンドで行われます）。
+
+---
+
 ## ファイル構成
 
 ```
 .
 ├── .github/workflows/
-│   ├── generate.yml   10:00 下書き生成 → Issue 作成
-│   ├── approve.yml    Issue の /approve /reject を処理
-│   └── post.yml       20:00 投稿 → ログ記録 → Issue に結果
+│   ├── generate.yml   月曜8:00 週次で下書き生成 → 1本のIssueにまとめる
+│   ├── approve.yml    Issueの /approve /reject /posted を処理
+│   └── post.yml       手動実行専用（schedule停止中）。自動投稿再開用に温存
 ├── src/
 │   ├── config.py      環境変数・パス
 │   ├── themes.py      曜日別テーマ・素材・切り口 ← よく編集する場所
-│   ├── generator.py   Claude での生成＋ルール自動チェック
-│   ├── threads_api.py Threads API クライアント
-│   ├── history.py     重複管理（28日クールダウン）
-│   ├── postlog.py     投稿ログ
+│   ├── generator.py   Claude での生成＋ルール自動チェック＋style-notes.md読み込み
+│   ├── weekly.py       週次まとめ生成（月〜土6日分、週内の切り口重複を回避）
+│   ├── style_notes.py  手動修正差分を style-notes.md に自動蓄積
+│   ├── threads_api.py Threads API クライアント（自動投稿再開用）
+│   ├── history.py     重複管理（28日クールダウン＋週内重複回避）
+│   ├── postlog.py     投稿ログ（自動投稿再開用）
+│   ├── guard.py        投稿クールダウン（自動投稿再開用）
 │   ├── drafts.py      下書きの読み書き
 │   └── cli.py         コマンド
 ├── drafts/            下書き（YYYY-MM-DD.json）
+├── style-notes.md     手動修正から分かる文体傾向（生成プロンプトに読み込まれる）
 ├── data/
-│   ├── history.json   投稿済みネタの履歴
-│   └── logs/          投稿ログ（月別 JSONL）
-└── tests/test_basic.py
+│   ├── history.json       投稿済みネタの履歴
+│   ├── style_edits.jsonl  手動修正の生の差分ログ（全件）
+│   └── logs/               投稿ログ（自動投稿時のみ増える）
+└── tests/
 ```

@@ -1,16 +1,13 @@
-name: 下書き生成
+name: 下書き生成（週次）
 
 on:
   schedule:
-    # 毎日 10:00 JST（01:00 UTC）月〜土。日曜は生成しない
-    - cron: "0 1 * * 1-6"
+    # 毎週月曜 8:00 JST（前週日曜 23:00 UTC）に、その週の月〜土6日分をまとめて生成
+    - cron: "0 23 * * 0"
   workflow_dispatch:
     inputs:
-      date:
-        description: "対象日 (YYYY-MM-DD)。空欄なら今日"
-        required: false
-      angle:
-        description: "切り口ID（省略可）"
+      monday:
+        description: "対象週の月曜日 (YYYY-MM-DD)。空欄なら今日を含む週の月曜"
         required: false
       force:
         description: "既存の下書きを上書きする"
@@ -38,29 +35,33 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: 対象日を決める
-        id: d
+      - name: 対象週の月曜日を決める
+        id: w
         env:
-          INPUT_DATE: ${{ github.event.inputs.date }}
+          INPUT_MONDAY: ${{ github.event.inputs.monday }}
+          TZ: Asia/Tokyo
         run: |
-          DATE="${INPUT_DATE:-$(TZ=Asia/Tokyo date +%F)}"
-          echo "date=$DATE" >> "$GITHUB_OUTPUT"
-          echo "weekday=$(TZ=Asia/Tokyo date -d "$DATE" +%u)" >> "$GITHUB_OUTPUT"
+          MONDAY=$(python3 -c "
+          import os
+          from datetime import date, timedelta
+          base = os.environ.get('INPUT_MONDAY') or date.today().isoformat()
+          y, m, d = map(int, base.split('-'))
+          dt = date(y, m, d)
+          print(dt - timedelta(days=dt.weekday()))
+          ")
+          echo "monday=$MONDAY" >> "$GITHUB_OUTPUT"
 
-      - name: 下書きを生成
-        if: steps.d.outputs.weekday != '7'
+      - name: 下書きを生成（月〜土6日分）
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_MODEL: ${{ vars.ANTHROPIC_MODEL || 'claude-sonnet-4-6' }}
           TZ: Asia/Tokyo
         run: |
-          python -m src.cli generate \
-            --date "${{ steps.d.outputs.date }}" \
-            ${{ github.event.inputs.angle && format('--angle {0}', github.event.inputs.angle) || '' }} \
+          python -m src.cli generate-week \
+            --monday "${{ steps.w.outputs.monday }}" \
             ${{ github.event.inputs.force == 'true' && '--force' || '' }}
 
       - name: 下書きをコミット
-        if: steps.d.outputs.weekday != '7'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -68,46 +69,83 @@ jobs:
           if git diff --cached --quiet; then
             echo "変更なし"
           else
-            git commit -m "下書き生成: ${{ steps.d.outputs.date }}"
+            git commit -m "下書き生成: ${{ steps.w.outputs.monday }}週"
             git push
           fi
 
       - name: 確認用 Issue を作成
-        if: steps.d.outputs.weekday != '7'
         uses: actions/github-script@v7
         env:
-          TARGET_DATE: ${{ steps.d.outputs.date }}
+          MONDAY: ${{ steps.w.outputs.monday }}
         with:
           script: |
             const fs = require('fs');
-            const date = process.env.TARGET_DATE;
-            const path = `drafts/${date}.json`;
-            if (!fs.existsSync(path)) { core.info('下書きファイルなし。Issue作成をスキップ'); return; }
-            const d = JSON.parse(fs.readFileSync(path, 'utf8'));
-            if (d.status === 'posted') { core.info('投稿済みのためスキップ'); return; }
-            const warn = (d.warnings || []).map(w => `- ⚠️ ${w}`).join('\n');
+            const { execSync } = require('child_process');
+
+            const monday = process.env.MONDAY;
+            const mondayDate = new Date(`${monday}T00:00:00+09:00`);
+            const weekdayJa = ['日', '月', '火', '水', '木', '金', '土'];
+
+            const sections = [];
+            let anyDraft = false;
+            let anyWarning = false;
+
+            for (let i = 0; i < 6; i++) {
+              const d = new Date(mondayDate.getTime() + i * 86400000);
+              const dateStr = d.toISOString().slice(0, 10);
+              const path = `drafts/${dateStr}.json`;
+              if (!fs.existsSync(path)) continue;
+              const draft = JSON.parse(fs.readFileSync(path, 'utf8'));
+              if (draft.status === 'posted') continue;
+              anyDraft = true;
+
+              const md = String(d.getMonth() + 1);
+              const dd = String(d.getDate());
+              const wd = weekdayJa[d.getDay()];
+              const warn = (draft.warnings || []).map(w => `- ⚠️ ${w}`).join('\n');
+              if (warn) anyWarning = true;
+
+              sections.push([
+                `## ${md}/${dd}（${wd}） ${draft.theme_name} ／ ${draft.angle_label}`,
+                '',
+                '### 本文（1投稿目）',
+                '```',
+                draft.body,
+                '```',
+                '### 返信（2投稿目）',
+                '```',
+                draft.reply,
+                '```',
+                warn ? `### 要確認\n${warn}` : '',
+              ].join('\n'));
+            }
+
+            if (!anyDraft) {
+              core.info('生成対象の下書きがないため Issue 作成をスキップ');
+              return;
+            }
+
+            const lastDate = new Date(mondayDate.getTime() + 5 * 86400000).toISOString().slice(0, 10);
             const body = [
-              `**テーマ**: ${d.theme_name} ／ **切り口**: ${d.angle_label}`,
-              `**投稿予定**: ${date} 20:00 (JST)`,
+              `**対象週**: ${monday} 〜 ${lastDate}（月〜土）`,
+              anyWarning ? '⚠️ 一部の日に自動チェックの要確認事項があります。該当日の内容を確認してください。' : '',
               '',
-              '### 1投稿目（本文）',
-              '```',
-              d.body,
-              '```',
-              '### 2投稿目（返信欄）',
-              '```',
-              d.reply,
-              '```',
-              warn ? `### 要確認\n${warn}` : '',
               '---',
-              '**承認する場合**: このIssueに `/approve` とコメントしてください（20:00に自動投稿されます）',
-              '**やめる場合**: `/reject` とコメントしてください',
-              '**修正したい場合**: `drafts/' + date + '.json` を直接編集してから `/approve` してください',
+              '',
+              sections.join('\n\n---\n\n'),
+              '',
+              '---',
+              '## 使い方',
+              '- 各コードブロックはGitHubのコピーボタンでそのままコピーできます（本文→返信の順に貼り付け）',
+              '- 修正したい場合は `drafts/YYYY-MM-DD.json` を直接編集してからコピペしてください（生成直後との差分は `/posted` 時に style-notes.md へ自動で記録されます）',
+              '- 投稿したら、その日付でこのIssueに `/posted YYYY-MM-DD` とコメントしてください（日付省略時は当日扱い）',
+              'やめる場合はその日付で `/reject YYYY-MM-DD` とコメントしてください',
             ].join('\n');
+
             const { data: issue } = await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `[下書き] ${date} ${d.theme_name}`,
+              title: `[下書き] ${monday}週（${monday} 〜 ${lastDate}）`,
               body,
               labels: ['threads-draft'],
             });

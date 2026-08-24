@@ -51,6 +51,9 @@ def new_draft(target: date, weekday_label: str, generated: dict) -> dict:
         "hook": generated.get("hook", ""),
         "body": generated["body"],
         "reply": generated["reply"],
+        # 生成直後の本文（手動修正しても書き換えない）。/posted 時の差分検出に使う。
+        "generated_body": generated["body"],
+        "generated_reply": generated["reply"],
         "summary": generated.get("summary", ""),
         "warnings": generated.get("warnings", []),
         "status": STATUS_PENDING,

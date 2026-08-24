@@ -36,6 +36,9 @@ USER_TEMPLATE = """今日は{date_str}（{weekday}曜日）です。
 # 直近で使ったつかみフレーズ（連続使用を避けること）
 {recent_hooks}
 
+# 過去にユーザーが手直しした傾向（参考情報。矛盾する場合はこちらを優先してよい）
+{style_notes}
+
 # 投稿フォーマット（厳守）
 - body（1投稿目・本文）:
   1行目 … つかみフレーズ（例のような、思わず続きが読みたくなる一言）
@@ -67,13 +70,30 @@ def _bullets(items: list[str]) -> str:
     return "\n".join(f"- {x}" for x in items) if items else "- （特になし）"
 
 
-def choose_angle(theme: Theme, target: date, seed: int | None = None) -> dict:
-    """クールダウンを考慮して切り口を選ぶ."""
+def choose_angle(
+    theme: Theme,
+    target: date,
+    seed: int | None = None,
+    *,
+    exclude_ids: set[str] | None = None,
+) -> dict:
+    """クールダウンを考慮して切り口を選ぶ。exclude_ids は同じ週など、直近で
+    既に使った切り口idを避けたいときに指定する（それで候補が0件になる場合は無視する）。"""
     candidates = history.available_angles(theme.key, theme.angles, target)
     if not candidates:
         candidates = list(theme.angles)
+    if exclude_ids:
+        filtered = [a for a in candidates if a["id"] not in exclude_ids]
+        if filtered:
+            candidates = filtered
     rng = random.Random(seed if seed is not None else f"{theme.key}-{target.isoformat()}")
     return rng.choice(candidates)
+
+
+def _style_notes_section() -> str:
+    if not config.STYLE_NOTES_FILE.exists():
+        return "（まだ記録なし）"
+    return config.STYLE_NOTES_FILE.read_text(encoding="utf-8").strip()[:6000]
 
 
 def build_prompt(theme: Theme, target: date, angle: dict) -> str:
@@ -89,6 +109,7 @@ def build_prompt(theme: Theme, target: date, angle: dict) -> str:
         recent_hooks=_bullets(history.recent_hooks()),
         hooks=_bullets(HOOK_EXAMPLES),
         style=_bullets(STYLE_RULES),
+        style_notes=_style_notes_section(),
     )
 
 
@@ -128,16 +149,28 @@ def validate(result: dict, theme: Theme) -> list[str]:
     return warnings
 
 
-def generate(theme: Theme, target: date, angle: dict | None = None, *, client=None) -> dict:
+def default_client():
+    """Anthropicクライアントを1つ作る（週次生成でまとめて使い回すために公開）."""
+    import anthropic
+
+    config.require("ANTHROPIC_API_KEY", config.ANTHROPIC_API_KEY)
+    return anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+
+
+def generate(
+    theme: Theme,
+    target: date,
+    angle: dict | None = None,
+    *,
+    client=None,
+    exclude_ids: set[str] | None = None,
+) -> dict:
     """投稿文を生成して dict を返す."""
-    angle = angle or choose_angle(theme, target)
+    angle = angle or choose_angle(theme, target, exclude_ids=exclude_ids)
     prompt = build_prompt(theme, target, angle)
 
     if client is None:
-        import anthropic
-
-        config.require("ANTHROPIC_API_KEY", config.ANTHROPIC_API_KEY)
-        client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+        client = default_client()
 
     message = client.messages.create(
         model=config.ANTHROPIC_MODEL,
