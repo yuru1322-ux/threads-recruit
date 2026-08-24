@@ -175,14 +175,8 @@ python -m pytest tests -q
 | コマンド | 効果 |
 |---|---|
 | `/posted [YYYY-MM-DD]` | その日の下書きを posted にし、history.json に記録する（重複管理に使われる）。日付省略時は当日 |
-| `/reject [YYYY-MM-DD]` | その日は投稿しない扱いにする |
-| `/approve [YYYY-MM-DD]` | 任意。承認の記録だけを残す（現在の運用では投稿の可否には影響しません） |
 
-日付は省略するとコメント中の `/posted` などの直後、または当日として扱われます。
-
-> **`/approve` について**: 以前は「承認しないと自動投稿されない」ゲートでしたが、
-> 投稿自体が手動になったため、今は特に何もブロックしません。セルフチェックの
-> 記録として使いたい場合のみ使ってください。使わなくても運用上の支障はありません。
+日付は省略すると `/posted` の直後、または当日として扱われます。
 
 ---
 
@@ -199,8 +193,8 @@ python -m src.cli generate --date 2026-08-24 --angle bonus --force
 
 ### 特定の日だけ休む
 
-その日付で Issue に `/reject 2026-08-24` とコメントしてください（投稿予定から外れます。
-実際にコピペしない、が唯一の強制力です）。
+その日はコピペしなければ投稿されません。`/posted` しなければ history.json にも
+記録されないので、重複管理にも影響しません。
 
 ### 自動投稿を再開する
 
@@ -246,7 +240,7 @@ curl -s "https://graph.threads.net/refresh_access_token?grant_type=th_refresh_to
 .
 ├── .github/workflows/
 │   ├── generate.yml   月曜8:00 週次で下書き生成 → 1本のIssueにまとめる
-│   ├── approve.yml    Issueの /approve /reject /posted を処理
+│   ├── posted.yml     Issueの /posted を処理（status更新・history記録）
 │   └── post.yml       手動実行専用（schedule停止中）。自動投稿再開用に温存
 ├── src/
 │   ├── config.py      環境変数・パス

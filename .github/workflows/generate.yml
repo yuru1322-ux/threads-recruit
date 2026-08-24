@@ -139,7 +139,6 @@ jobs:
               '- 各コードブロックはGitHubのコピーボタンでそのままコピーできます（本文→返信の順に貼り付け）',
               '- 修正したい場合は `drafts/YYYY-MM-DD.json` を直接編集してからコピペしてください（生成直後との差分は `/posted` 時に style-notes.md へ自動で記録されます）',
               '- 投稿したら、その日付でこのIssueに `/posted YYYY-MM-DD` とコメントしてください（日付省略時は当日扱い）',
-              'やめる場合はその日付で `/reject YYYY-MM-DD` とコメントしてください',
             ].join('\n');
 
             const { data: issue } = await github.rest.issues.create({

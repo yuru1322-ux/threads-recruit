@@ -1,0 +1,77 @@
+name: 投稿完了記録
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: threads-posted-${{ github.event.issue.number }}
+
+jobs:
+  posted:
+    # リポジトリのオーナー／メンテナのコメントのみ受け付ける
+    if: >
+      github.event.issue.state == 'open' &&
+      startsWith(github.event.issue.title, '[下書き]') &&
+      (github.event.comment.author_association == 'OWNER' ||
+       github.event.comment.author_association == 'MEMBER' ||
+       github.event.comment.author_association == 'COLLABORATOR') &&
+      contains(github.event.comment.body, '/posted')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install -r requirements.txt
+
+      - name: 対象日を取り出す
+        id: p
+        env:
+          COMMENT: ${{ github.event.comment.body }}
+          TZ: Asia/Tokyo
+        run: |
+          # コメント本文中の /posted の直後にある日付を優先する（週次Issue対応）。
+          # 例: 「/posted 2026-08-24」「/posted」
+          DATE=$(echo "$COMMENT" | grep -oE "/posted[[:space:]]+[0-9]{4}-[0-9]{2}-[0-9]{2}" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}' | head -1)
+          if [ -z "$DATE" ]; then
+            # 日付省略時は当日扱い
+            DATE=$(TZ=Asia/Tokyo date +%F)
+          fi
+          echo "date=$DATE" >> "$GITHUB_OUTPUT"
+
+      - name: ステータスを更新
+        env:
+          TZ: Asia/Tokyo
+        run: python -m src.cli posted --date "${{ steps.p.outputs.date }}"
+
+      - name: コミット
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase --autostash
+          git add drafts data style-notes.md
+          if git diff --cached --quiet; then
+            echo "変更なし"
+          else
+            git commit -m "posted: ${{ steps.p.outputs.date }}"
+            git push
+          fi
+
+      - uses: actions/github-script@v7
+        env:
+          TARGET_DATE: ${{ steps.p.outputs.date }}
+        with:
+          script: |
+            const date = process.env.TARGET_DATE;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `📮 ${date} の投稿完了を記録しました。`,
+            });
