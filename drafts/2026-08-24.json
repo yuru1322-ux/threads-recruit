@@ -11,10 +11,10 @@
   "reply": "訪問看護って「件数が多いほど稼げる」歩合制のところも多いんですよね。でもそれって、雨の日も休日返上も、気づいたら件数のために動いている…みたいな働き方になりがちで。\n\nうちは固定給なので、今月たくさん訪問しても、ちょっと少なくても、給与は変わりません！でも頑張りに応じてちゃんと賞与もあります。\n\n「来月いくらもらえるかな」って毎月ドキドキしなくていいのって、地味に大事だと思っています☺️",
   "summary": "固定給・安定収入・業界平均より10万円以上高い給与",
   "warnings": [],
-  "status": "approved",
+  "status": "failed",
   "generated_at": "2026-08-24T11:14:34.839008+09:00",
   "posted_at": null,
   "threads_post_id": null,
   "threads_reply_id": null,
-  "error": null
+  "error": "HTTP 400: API access blocked.\nMeta側のAPIアクセス制限（OAuthException code 200 \"API access blocked\"）と判断されます。手動リトライを繰り返すとブロックが長引くおそれがあるため、今は再実行せず時間をおいてください。`python -m src.cli diagnose` で読み取りが復旧しているか確認できます。"
 }
